@@ -22,8 +22,6 @@
 
 #include "asterisk.h"
 
-ASTERISK_FILE_VERSION(__FILE__, "$Revision$")
-
 #include "asterisk/file.h"
 #include "asterisk/module.h"
 #include "asterisk/channel.h"
@@ -61,6 +59,7 @@ static const char app[] = "V23";
 #define SLOW_FILTER_C (0.08)
 #define FAST_AMPLITUDE (20000)
 
+
 /* struct containing the demodulator state
  * contains demodulation phase, filter states as well as the 
  * position in the current octet
@@ -71,11 +70,13 @@ typedef struct {
 	double iq[3][2]; //iq[0] newest iq[2] oldest
 	double f[SLOW_FILTER_ORDER][2]; //filter states
 	double integral;
+	double avg_power; //average power
 	int d;
 } demod_state_t;
 
 /* Initializes a demod_state_t struct
  */
+void init_demod_state(demod_state_t *state);
 void init_demod_state(demod_state_t *state)
 {
 	int n,m;
@@ -87,15 +88,21 @@ void init_demod_state(demod_state_t *state)
 	state->pos=-2;
 	state->integral=0;
 	state->d=0;
+	state->avg_power=0;
 }
 
+double sqr(double x);
 double sqr(double x)
 {
 	return x*x;
 }
 
 /*This gets a sample in x and returns an octet or a negative number
+ *  0..255 received octet
+ *  -1 no data
+ *  -2 no carrier
  */
+int v23_demodulate(int x, demod_state_t *state);
 int v23_demodulate(int x, demod_state_t *state)
 {
 	int n;
@@ -125,11 +132,12 @@ int v23_demodulate(int x, demod_state_t *state)
 	double p=sqr(state->iq[1][0])+sqr(state->iq[1][1]);
 	double frq=0; //Frequency
 	if (p!=0) frq=-f_/p; //>0 => 1; <0 => 0
+	state->avg_power=(state->avg_power*0.9)+p*0.1;
 	//decode
-	if (p<0.2) { //No carrier
+	if (state->avg_power<100000) { //No carrier
 		state->pos=-1;
 		state->integral=0;
-		return -1;
+		return -2;
 	}
 	if (state->pos<0) {
 		if (frq<0) {
@@ -201,6 +209,7 @@ int sinetab[STABLEN]={
 #define ACK (0x06)
 #define NACK (0x15)
 
+
 typedef struct {
 	int phi; //phase of the modulator
 	int spos; //position in samples within an octet
@@ -208,6 +217,7 @@ typedef struct {
 } modstate_t;
 
 //Modulates a single bit and outputs a sample
+int v23_mod(modstate_t *state, unsigned int bit);
 int v23_mod(modstate_t *state, unsigned int bit)
 {
 	int f;
@@ -217,6 +227,7 @@ int v23_mod(modstate_t *state, unsigned int bit)
 	return sinetab[state->phi];
 }
 
+void init_modstate(modstate_t *state);
 void init_modstate(modstate_t *state)
 {
 	state->phi=0;
@@ -226,6 +237,7 @@ void init_modstate(modstate_t *state)
 
 //Modulates the octet in the current outgoing buffer
 //as well as start and stop bits
+int v23_modulate(modstate_t *state);
 int v23_modulate(modstate_t *state)
 {
 	//Handle idle state
@@ -247,7 +259,8 @@ int v23_modulate(modstate_t *state)
 
 /* Connects to a server, parameter is "address port"
  */
-int v23_connect(char *addr)
+int v23_connect(const char *addr);
+int v23_connect(const char *addr)
 {
 	int port=0;
 	char ip[strlen(addr)];
@@ -271,6 +284,7 @@ int v23_connect(char *addr)
 #define BUFFLEN (64)
 
 
+uint16_t crc(uint16_t cr, uint8_t b);
 uint16_t crc(uint16_t cr, uint8_t b)
 {
 	uint16_t c=cr;
@@ -285,7 +299,7 @@ uint16_t crc(uint16_t cr, uint8_t b)
 
 
 #define BLEN (1024) //length of the circular buffer
-#define PLEN (64) //maximum length of a packet
+#define PLEN (32) //maximum length of a packet
 #define READLEN (32) 
 #define T1 (12000) 
 #define T1C (4)
@@ -307,15 +321,25 @@ typedef struct {
 	int readp; //pointer to the next octet to be read from socket
 	int as; //ACK state: 1=first character received, 2=ACK received, 3=NACK received, other=idle
 	int p; //State <=0: idle; 1: sent STX; 3: send CRC l; 4: send CRC h
-	int ack_timer; //>1 when timer is waiting; =1 send ENQ; <0 not waiting for ACK
+	int ack_state; //1: $10 has been received
 	int ack_count; //when ack_count==1 && ack_timer==0 hang up
+	int neg_state; //state of the negotiation -1=no carrier detected, 0=ready to send
+	int blocklength; //length of the block
+	int last_etx;
 } linkstate_t;
 
 void init_linkstate(linkstate_t *s)
 {
 	memset(s,0,sizeof(linkstate_t));
 	s->last=-1;
+	s->neg_state=-1;
+	s->current=-1;
+	s->border=0;
+	s->last_etx=-1;
 }
+
+
+int difference(int to, int from);
 
 int difference(int to, int from)
 {
@@ -323,47 +347,10 @@ int difference(int to, int from)
 	return to-from+BLEN;
 }
 
-/* link_layer: Handles the link layer (packed retransmission) 
- * return value:
- * 	0-255: octet sent to the terminal
- *	-1: No data
- *	-2: Hangup
-*/
-int link_layer(linkstate_t *s, int sock, int input, int since)
+
+int ll_get_data(linkstate_t *s, int sock);
+int ll_get_data(linkstate_t *s, int sock)
 {
-
-	//Handle input
-	if (input>=0) {
-		if (input==NACK) s->as=3; //NACK received
-		if ( (input==ACK) && (s->as==0) ) s->as=2; else
-		if ( (input==0x10) && (s->as==0) ) s->as=1; else
-		if ( (input==0x30) && (s->as==1) ) s->as=2; else
-		if ( (input==0x31) && (s->as==1) ) s->as=2; else {
-			//send to socket
-			char sc=input;
-			if (send(sock,&sc,1,0)<0) return -2; //If there's an error, hang up 
-		}
-	}
-	
-
-	//Handle ACK/NACK responses
-	if (s->as==2) { //ACK recieved
-		s->as=0; //clear ACK
-		s->last=-1; //drop last packet 
-		s->ack_timer=-1; //Cancel sending ENQs
-	}
-
-	if ((s->as==3) && (s->last!=-1) ) { //NACK received
-		//prepare retransmitting last packet
-		s->current=s->last; //set start
-		s->border=s->last; //set resume position
-		s->last=-1;
-		s->as=0;
-		s->ack_timer=-1; //Cancel sending ENQs
-		//abort current packet
-		return ETB;
-	}
-
 	//Read from socket
 	int lb=s->last; //find out last octet to keep
 	int f=0;
@@ -375,6 +362,7 @@ int link_layer(linkstate_t *s, int sock, int input, int since)
 	//	printf("<READ>\n");
 		uint8_t b[READLEN];
 		int l=recv(sock,b,READLEN,0);
+		printf("read %d\n", l);
 		if (l>0) {
 			int n;
 			for (n=0;n<l;n++) {
@@ -383,67 +371,119 @@ int link_layer(linkstate_t *s, int sock, int input, int since)
 			}
 		} else {
 			if (errno==ENOTCONN) {
-				return -2;
 				printf("errorno==ENOTCONN\n");
+				return -2;
 			}
 		}
 	}
+	return 0;
+}
 
-	//Handle output
-	if ( (s->p<=0) && (s->current!=s->readp) ) { //Send STX
-		s->p=1;
-		s->crc=0;
-		 //Packet starts here at current
+int link_layer(linkstate_t *s, int sock, int input, int time);
+/* link_layer: Handles the link layer (packed retransmission) 
+ * return value:
+ * 	0-255: octet sent to the terminal
+ *	-1: No data
+ *	-2: Hangup
+*/
+int link_layer(linkstate_t *s, int sock, int input, int time)
+{
+
+	//Handle input
+	if (input==-2) { //No carrier from the terminal, reset everything
+		s->neg_state=-1; //no carrier detected
+	} else {
+		if( s->neg_state==-1) {
+			s->neg_state=1;
+		}
+	};
+	ll_get_data(s, sock);
+	if (s->neg_state>0) {
+		s->neg_state=s->neg_state+1;
+		if (s->neg_state==6000) return 0; //NUL Byte to cause modem to identify
+		if (s->neg_state>40000) s->neg_state=0; //Give connection
+	}
+	if ((s->ack_state==1) && ( (input==0x30) || (input=0x31) || (input=0x3f))) {
+		printf("ack_state=1 input=0x%02x\n", input);
+		//erase previous frame
+		s->last=-1;
+		s->last_etx=-1; 
+		s->ack_state=-1;
+	} else
+	if (input==0x10) {
+		s->ack_state=1;
+	} else
+	if (input==ACK) {
+		//erase previous frame
+		s->last=-1;
+		s->last_etx=-1; //stop sending ENQ
+	} else
+	if (input==NACK) {
+		s->last_etx=-1; //stop sending ENQ
+		//repeat last frame
+		if (s->last>=0) {
+			s->border=s->last;
+			s->last=-1;
+			if (s->current<0) return -1;
+			s->current=-1; //Send STX next time
+			return EOT; //send EOT
+		} //If no previous block, just continue
+	} else if (input>=0) { //Normal octet from modem, pass through
+		char sc=input;
+		if (send(sock, &sc, 1,0)<0) return -2; //Send octet and hang up if there's an error
+	}
+
+
+	if (s->neg_state!=0) { //if there is no carrier, return -1 => idle
+		return -1;
+	}
+	
+//	printf("neg_state=%d current=%d last=%d border=%d readp=%d\n", s->neg_state, s->current, s->last, s->border, s->readp);
+
+	if ((s->current==-1) && (s->border>=0) /*&& (s->last<0)*/) { //Send STX as a new block starts
+		printf("neg_state=%d current=%d last=%d border=%d readp=%d\n", s->neg_state, s->current, s->last, s->border, s->readp);
+		s->current=s->border; //send first character next time
+		s->crc=0; //Reset CRC
+		s->blocklength=0;
 		return STX;
 	}
-
-	if (s->p==1) { //In data-sending mode
-		int end_packet=0;
-		if (s->current==s->readp) end_packet=1; //No data to send
-		//Calculate packet size
-		int ps=(s->current-s->border); 
-		if (ps<0) ps=ps+BLEN;
-		if (ps>PLEN) end_packet=1;
-		if ( (end_packet==0) ) { //Data to send
-			int b=s->buffer[s->current]; //get byte
-			s->current=(s->current+1)%BLEN;
-			s->crc=crc(s->crc,b);
-			return b;
-		} else { //No data to send
-			if (s->last>=0) return -1; //If there's been no ACK, return
-			//otherwise end packet
-			s->crc=crc(s->crc,ETX);
-			s->p=3;
-			return ETX;
-		} 
+	if ((s->current>=0)) {
+		int ch=s->buffer[s->current];
+//		printf("ch=%d\n",ch);
+		s->current=(s->current+1)%BLEN;
+		int end=0;
+		if (s->current==s->readp) end=1;
+		if (s->blocklength>256) end=1;
+		if (end!=0) { //if all octets have been sent
+			printf("end==1\n");
+			s->last=s->border;
+			s->border=s->current; //
+			s->current=-2; //send ETX
+			s->last_etx=time;
+		}
+		s->crc=crc(s->crc, ch);
+		s->blocklength=s->blocklength+1;
+		return ch;
 	}
-	if ( (s->p==3) ) { //Send CRC l
-		s->p=4; //next state CRC h
+	if (s->current==-2) { //ETX
+		s->crc=crc(s->crc,ETX);
+		s->current=-3;
+		return ETX;
+	}
+	if (s->current==-3) { //CRC low
+		s->current=-4; //next octet CRC high
 		return s->crc%256;
 	}
-	if ( (s->p==4) ) { //Send CRC h
-		s->p=-1; //Next state idle
-		s->last=s->border;
-		s->border=s->current;
-		//Start ACK timer
-		s->ack_timer=T1;
-		s->ack_count=T1C;
+	if (s->current==-4) { //CRC hight
+		s->current=-1;
 		return s->crc/256;
 	}
 
-	//Handle ENQ
-	if (s->ack_timer>0) {
-		s->ack_timer=s->ack_timer-since;
-		if (s->ack_timer<=0) {
-			if (s->ack_count==0) return -2; //Hangup
-			s->ack_count=s->ack_count-1;
-			s->ack_timer=T1;
-			return ENQ;	
-		}
+	if (s->last_etx+1000<time) {
+		s->last_etx=time;
+		return ENQ;
 	}
 
-	//Idle state
-	s->p=-1;
 	return -1;
 }
 
@@ -464,8 +504,8 @@ static int v23_exec(struct ast_channel *chan, const char *data)
 	init_modstate(&mod_state);
 	linkstate_t link_state;
 	init_linkstate(&link_state);
-	int read_octet=-1;
-	int since=0; //samples since link_layer was called the last time;
+	int time_ms=0; //ms since connection started
+	int read_byte=-4;
 	while (ast_waitfor(chan, -1) > -1) {
 		struct ast_frame *f = ast_read(chan);
 		if (!f) {
@@ -478,18 +518,17 @@ static int v23_exec(struct ast_channel *chan, const char *data)
 			int16_t *d=&(f->data.pad[f->offset*2]); 
 			//modulate outgoing audio
 			for (n=0; n<f->samples; n++) {
-				since=since+1;
 				int e=v23_demodulate(d[n],&demod_state);
-				
-				if (e>=0) {
-					char sc=e;
-					read_octet=e;
+				if (e==-2) read_byte=-2;
+			       	if (e>=0) {
+					read_byte=e;
+					printf("read_byte=%d\n", read_byte);
 				}
 				d[n]=v23_modulate(&mod_state);
 				if (mod_state.spos==-1) {
-					int rc=link_layer(&link_state,sock,read_octet,since);
-					since=0;
-					read_octet=-1;
+					int rc=link_layer(&link_state,sock,read_byte,time_ms+n/12);
+					read_byte=-1;
+					//if (rc!=-1) printf("rc=%d %c\n", rc, rc);
 					if (rc<-2) goto end; 
 					if (rc>=0) {
 						mod_state.data=rc;
@@ -499,6 +538,7 @@ static int v23_exec(struct ast_channel *chan, const char *data)
 				} 
 			}
 			ast_write(chan, f);
+			time_ms=time_ms+(f->samples/12);
 		} else
 		if (f->frametype != AST_FRAME_CONTROL
 			&& f->frametype != AST_FRAME_MODEM
