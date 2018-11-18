@@ -22,7 +22,7 @@ int main(int argc, char **argv)
 			double q_=q[2]-i[0];
 			double f=i_*q[1]-q_*i[1];
 			double p=i[1]*i[1]+q[1]*q[1];
-			double frq=f/p;
+			double frq=-f/p;
 			if (p<2e-3) frq=0;
 			printf("0 %lf\n", frq/10);
 			i[2]=i[1]; i[1]=i[0];
