@@ -453,7 +453,7 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		s->current=(s->current+1)%BLEN;
 		int end=0;
 		if (s->current==s->readp) end=1;
-		if (s->blocklength>256) end=1;
+		if (s->blocklength>40) end=1;
 		if (end!=0) { //if all octets have been sent
 			printf("end==1\n");
 			s->last=s->border;
