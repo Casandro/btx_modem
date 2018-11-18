@@ -19,7 +19,7 @@ int main(int argc, char **argv)
 		if (n==3) q[0]=-x;
 		if (n%2==1) {
 			double i_=i[2]-i[0];
-			double q_=q[2]-i[0];
+			double q_=q[2]-q[0];
 			double f=i_*q[1]-q_*i[1];
 			double p=i[1]*i[1]+q[1]*q[1];
 			double frq=-f/p;
