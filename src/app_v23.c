@@ -344,7 +344,7 @@ int difference(int to, int from);
 int difference(int to, int from)
 {
 	if (to>from) return to-from;
-
+}
 
 int ll_get_data(linkstate_t *s, int sock);
 int ll_get_data(linkstate_t *s, int sock)
@@ -553,12 +553,12 @@ end:
 	return res;
 }
 
-static int unload_module(void)
+int unload_module(void)
 {
 	return ast_unregister_application(app);
 }
 
-static int load_module(void)
+int load_module(void)
 {
 	return ast_register_application_xml(app, v23_exec);
 }
