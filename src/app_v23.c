@@ -439,7 +439,7 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 	
 //	printf("neg_state=%d current=%d last=%d border=%d readp=%d\n", s->neg_state, s->current, s->last, s->border, s->readp);
 
-	if ((s->current==-1) && (s->border>=0) /*&& (s->last<0)*/) { //Send STX as a new block starts
+	if ((s->current==-1) && (s->border>=0) && (s->border!=s->readp)) { //Send STX as a new block starts
 		printf("neg_state=%d current=%d last=%d border=%d readp=%d\n", s->neg_state, s->current, s->last, s->border, s->readp);
 		s->current=s->border; //send first character next time
 		s->crc=0; //Reset CRC
@@ -448,7 +448,9 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 	}
 	if ((s->current>=0)) {
 		int ch=s->buffer[s->current];
+		s->buffer[s->current]='#';
 //		printf("ch=%d\n",ch);
+		if (ch=='#') printf("old data s->current=%d, s->readp=%d\n", s->current, s->readp);
 		s->current=(s->current+1)%BLEN;
 		int end=0;
 		if (s->current==s->readp) end=1;
