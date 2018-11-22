@@ -298,8 +298,8 @@ uint16_t crc(uint16_t cr, uint8_t b)
 }
 
 
-#define BLEN (1024) //length of the circular buffer
-#define PLEN (32) //maximum length of a packet
+#define BLEN (128) //length of the circular buffer
+#define PLEN (40) //maximum length of a packet
 #define READLEN (32) 
 #define T1 (12000) 
 #define T1C (4)
@@ -307,7 +307,7 @@ uint16_t crc(uint16_t cr, uint8_t b)
 
 /*
  * Buffer
- * 0----------------------------------------1024->
+ * 0----------------------------------------BLEN->
  *      ^     ^   ^
  *      A     B   C
 */
@@ -344,8 +344,6 @@ int difference(int to, int from);
 int difference(int to, int from)
 {
 	if (to>from) return to-from;
-	return to-from+BLEN;
-}
 
 
 int ll_get_data(linkstate_t *s, int sock);
@@ -403,12 +401,13 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		if (s->neg_state==6000) return 0; //NUL Byte to cause modem to identify
 		if (s->neg_state>40000) s->neg_state=0; //Give connection
 	}
-	if ((s->ack_state==1) && ( (input==0x30) || (input=0x31) || (input=0x3f))) {
+	if ((s->ack_state==1) && ( (input==0x30) || (input==0x31) || (input==0x3f))) {
 		printf("ack_state=1 input=0x%02x\n", input);
 		//erase previous frame
 		s->last=-1;
 		s->last_etx=-1; 
 		s->ack_state=-1;
+		return -1; //Return, since it'll be called again on next sample
 	} else
 	if (input==0x10) {
 		s->ack_state=1;
@@ -453,12 +452,12 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		s->current=(s->current+1)%BLEN;
 		int end=0;
 		if (s->current==s->readp) end=1;
-		if (s->blocklength>40) end=1;
+		if (s->blocklength>=BLEN) end=1;
 		if (end!=0) { //if all octets have been sent
 			printf("end==1\n");
 			s->last=s->border;
 			s->border=s->current; //
-			s->current=-2; //send ETX
+			s->current=-2; //send ETX next time
 			s->last_etx=time;
 		}
 		s->crc=crc(s->crc, ch);
@@ -467,7 +466,7 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 	}
 	if (s->current==-2) { //ETX
 		s->crc=crc(s->crc,ETX);
-		s->current=-3;
+		s->current=-3; //Send CRC low next time
 		return ETX;
 	}
 	if (s->current==-3) { //CRC low
