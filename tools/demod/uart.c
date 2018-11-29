@@ -49,7 +49,8 @@ int main(int argc, char** argv)
 			if (sum>=2) byte=byte|(1<<7);
 		}	
 		if (err<3) {
-			printf("%lf\t%s\t%02x\t%c\n", t, arrow, byte, byte); 
+			if ( (byte>32) && (byte<127) ) printf("%lf\t%s\t%02x\t%c\n", t, arrow, byte, byte); 
+			else printf("%lf\t%s\t%02x\n", t, arrow, byte); 
 		}
 	}
 }
