@@ -299,7 +299,7 @@ uint16_t crc(uint16_t cr, uint8_t b)
 
 
 #define BLEN (128) //length of the circular buffer
-#define PLEN (40) //maximum length of a packet
+#define PLEN (39) //maximum length of a packet
 #define READLEN (32) 
 #define T1 (12000) 
 #define T1C (4)
@@ -313,24 +313,32 @@ uint16_t crc(uint16_t cr, uint8_t b)
 */
 
 typedef struct {
-	uint8_t buffer[BLEN];
 	uint16_t crc;
 	int last; //pointer to start of previous packet in case of retransmission, -1=nothing to retransmit
 	int border; //border between last and current packet (first new octet)
 	int current; //pointer to the next octet to send out
 	int readp; //pointer to the next octet to be read from socket
-	int as; //ACK state: 1=first character received, 2=ACK received, 3=NACK received, other=idle
-	int p; //State <=0: idle; 1: sent STX; 3: send CRC l; 4: send CRC h
+//	int as; //ACK state: 1=first character received, 2=ACK received, 3=NACK received, other=idle
+//	int p; //State <=0: idle; 1: sent STX; 3: send CRC l; 4: send CRC h
 	int ack_state; //1: $10 has been received
 	int ack_count; //when ack_count==1 && ack_timer==0 hang up
 	int neg_state; //state of the negotiation -1=no carrier detected, 0=ready to send
 	int blocklength; //length of the block
 	int last_etx;
+	uint8_t buffer[BLEN];
 } linkstate_t;
+
+
+void print_linkstate(linkstate_t *s, char *c)
+{
+	return;
+//	printf("%s last=%d border=%d current=%d readp=%d ack_state=%d\n", c, s->last, s->border, s->current, s->readp, s->ack_state);
+}
 
 void init_linkstate(linkstate_t *s)
 {
 	memset(s,0,sizeof(linkstate_t));
+	s->readp=0;
 	s->last=-1;
 	s->neg_state=-1;
 	s->current=-1;
@@ -349,30 +357,19 @@ int difference(int to, int from)
 int ll_get_data(linkstate_t *s, int sock);
 int ll_get_data(linkstate_t *s, int sock)
 {
+	if (s->last!=-1) return; //If there is still unacknowledged data don't read anything new
 	//Read from socket
-	int lb=s->last; //find out last octet to keep
-	int f=0;
-	if (lb<0) lb=s->border;
-	if (lb==s->readp) f=BLEN; else
-	if (lb>s->readp) f=(lb-s->readp); else
-	if (lb<s->readp) f=BLEN-(s->readp-lb);
-	if (f>READLEN*2) {
-	//	printf("<READ>\n");
-		uint8_t b[READLEN];
-		int l=recv(sock,b,READLEN,0);
-		printf("read %d\n", l);
-		if (l>0) {
-			int n;
-			for (n=0;n<l;n++) {
-				s->buffer[s->readp]=b[n];
-				s->readp=(s->readp+1)%BLEN;
-			}
-		} else {
-			if (errno==ENOTCONN) {
-				printf("errorno==ENOTCONN\n");
-				return -2;
-			}
-		}
+	int space=0;
+	int lb=s->border; 
+	
+	while (0==0) {
+		if (lb==(s->readp+1)%BLEN) return 0;
+		uint8_t octet=0;
+		int l=recv(sock, &octet, 1, 0);
+		if (errno==ENOTCONN) return -2; //No connection => hangup
+		if (l<=0) return 0;
+		s->buffer[s->readp]=octet;
+		s->readp=(s->readp+1)%BLEN;
 	}
 	return 0;
 }
@@ -401,8 +398,9 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		if (s->neg_state==6000) return 0; //NUL Byte to cause modem to identify
 		if (s->neg_state>40000) s->neg_state=0; //Give connection
 	}
+	//if (input>=0) printf("input=0x%02x\n", input);
 	if ((s->ack_state==1) && ( (input==0x30) || (input==0x31) || (input==0x3f))) {
-		printf("ack_state=1 input=0x%02x\n", input);
+		//printf("ack_state=1 input=0x%02x\n", input);
 		//erase previous frame
 		s->last=-1;
 		s->last_etx=-1; 
@@ -437,31 +435,34 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		return -1;
 	}
 	
-//	printf("neg_state=%d current=%d last=%d border=%d readp=%d\n", s->neg_state, s->current, s->last, s->border, s->readp);
 
 	if ((s->current==-1) && (s->border>=0) && (s->border!=s->readp)) { //Send STX as a new block starts
-		printf("neg_state=%d current=%d last=%d border=%d readp=%d\n", s->neg_state, s->current, s->last, s->border, s->readp);
 		s->current=s->border; //send first character next time
 		s->crc=0; //Reset CRC
 		s->blocklength=0;
 		return STX;
 	}
-	if ((s->current>=0)) {
-		int ch=s->buffer[s->current];
-		s->buffer[s->current]='#';
-//		printf("ch=%d\n",ch);
-		if (ch=='#') printf("old data s->current=%d, s->readp=%d\n", s->current, s->readp);
-		s->current=(s->current+1)%BLEN;
+	if ((s->current>=0)) { //data phase
 		int end=0;
 		if (s->current==s->readp) end=1;
-		if (s->blocklength>=BLEN) end=1;
-		if (end!=0) { //if all octets have been sent
-			printf("end==1\n");
+		if (s->blocklength>=PLEN) end=1;
+		if (end!=0) { // end or abort the current frme
+			if (s->last!=-1) { //No ACK, therefore abort
+				s->current=-5; //give INQ a chance
+				return EOT;
+			}
+			//End packet
 			s->last=s->border;
-			s->border=s->current; //
-			s->current=-2; //send ETX next time
+			s->border=s->current;
+			s->crc=crc(s->crc,ETX);
+			s->current=-3; //send CRC low next time
 			s->last_etx=time;
+			return ETX;
 		}
+		int ch=s->buffer[s->current];
+		print_linkstate(s, "outp");
+		//printf("ch=%d\n",ch);
+		s->current=(s->current+1)%BLEN;
 		s->crc=crc(s->crc, ch);
 		s->blocklength=s->blocklength+1;
 		return ch;
@@ -480,10 +481,12 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		return s->crc/256;
 	}
 
-	if (s->last_etx+1000<time) {
+	if ( ((s->current==-5) && (s->last!=0)) ||  (s->last_etx+1000<time) ) {
 		s->last_etx=time;
+		s->current=-1;
 		return ENQ;
 	}
+	if (s->current==-5) s->current=-1;
 
 	return -1;
 }
@@ -523,7 +526,7 @@ static int v23_exec(struct ast_channel *chan, const char *data)
 				if (e==-2) read_byte=-2;
 			       	if (e>=0) {
 					read_byte=e;
-					printf("read_byte=%d\n", read_byte);
+					//printf("read_byte=%d\n", read_byte);
 				}
 				d[n]=v23_modulate(&mod_state);
 				if (mod_state.spos==-1) {
