@@ -481,7 +481,7 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		return s->crc/256;
 	}
 
-	if ( ((s->current==-5) && (s->last!=0)) ||  (s->last_etx+1000<time) ) {
+	if ( ((s->current==-5) && (s->last!=0)) || ( (s->last_etx+1000<time) && (s->last_etx>=0)) )  {
 		s->last_etx=time;
 		s->current=-1;
 		return ENQ;
