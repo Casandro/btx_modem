@@ -324,7 +324,7 @@ typedef struct {
 	int ack_count; //when ack_count==1 && ack_timer==0 hang up
 	int neg_state; //state of the negotiation -1=no carrier detected, 0=ready to send
 	int blocklength; //length of the block
-	int last_etx;
+	int next_inq;
 	uint8_t buffer[BLEN];
 } linkstate_t;
 
@@ -343,7 +343,7 @@ void init_linkstate(linkstate_t *s)
 	s->neg_state=-1;
 	s->current=-1;
 	s->border=0;
-	s->last_etx=-1;
+	s->next_inq=-1;
 }
 
 
@@ -403,7 +403,7 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		//printf("ack_state=1 input=0x%02x\n", input);
 		//erase previous frame
 		s->last=-1;
-		s->last_etx=-1; 
+		s->next_inq=-1; 
 		s->ack_state=-1;
 		return -1; //Return, since it'll be called again on next sample
 	} else
@@ -413,10 +413,10 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 	if (input==ACK) {
 		//erase previous frame
 		s->last=-1;
-		s->last_etx=-1; //stop sending ENQ
+		s->next_inq=-1; //stop sending ENQ
 	} else
 	if (input==NACK) {
-		s->last_etx=-1; //stop sending ENQ
+		s->next_inq=-1; //stop sending ENQ
 		//repeat last frame
 		if (s->last>=0) {
 			s->border=s->last;
@@ -449,6 +449,7 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		if (end!=0) { // end or abort the current frme
 			if (s->last!=-1) { //No ACK, therefore abort
 				s->current=-5; //give INQ a chance
+				s->next_inq=time+1000;
 				return EOT;
 			}
 			//End packet
@@ -456,7 +457,7 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 			s->border=s->current;
 			s->crc=crc(s->crc,ETX);
 			s->current=-3; //send CRC low next time
-			s->last_etx=time;
+			s->next_inq=time+1000;
 			return ETX;
 		}
 		int ch=s->buffer[s->current];
@@ -481,8 +482,8 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 		return s->crc/256;
 	}
 
-	if ( ((s->current==-5) && (s->last!=0)) || ( (s->last_etx+1000<time) && (s->last_etx>=0)) )  {
-		s->last_etx=time;
+	if ( ((s->current==-5) && (s->last!=0)) || ( (s->next_inq<time) && (s->next_inq>=0)) )  {
+		s->next_inq=time+1000;
 		s->current=-1;
 		return ENQ;
 	}
