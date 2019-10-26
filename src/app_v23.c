@@ -281,7 +281,6 @@ int v23_connect(const char *addr)
 	return sock;
 }
 
-#define BUFFLEN (64)
 
 
 uint16_t crc(uint16_t cr, uint8_t b);
@@ -298,8 +297,8 @@ uint16_t crc(uint16_t cr, uint8_t b)
 }
 
 
-#define BLEN (128) //length of the circular buffer
-#define PLEN (39) //maximum length of a packet
+#define BLEN (256) //length of the circular buffer
+#define PLEN (64) //maximum length of a packet
 #define READLEN (32) 
 #define T1 (12000) 
 #define T1C (4)
@@ -318,8 +317,6 @@ typedef struct {
 	int border; //border between last and current packet (first new octet)
 	int current; //pointer to the next octet to send out
 	int readp; //pointer to the next octet to be read from socket
-//	int as; //ACK state: 1=first character received, 2=ACK received, 3=NACK received, other=idle
-//	int p; //State <=0: idle; 1: sent STX; 3: send CRC l; 4: send CRC h
 	int ack_state; //1: $10 has been received
 	int ack_count; //when ack_count==1 && ack_timer==0 hang up
 	int neg_state; //state of the negotiation -1=no carrier detected, 0=ready to send
@@ -413,9 +410,10 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 	if (input==ACK) {
 		//erase previous frame
 		s->last=-1;
-		s->next_inq=-1; //stop sending ENQ
+		s->next_inq=-1; //stop sending ENQ	
 	} else
 	if (input==NACK) {
+
 		s->next_inq=-1; //stop sending ENQ
 		//repeat last frame
 		if (s->last>=0) {
