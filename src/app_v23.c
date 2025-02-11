@@ -354,7 +354,7 @@ int difference(int to, int from)
 int ll_get_data(linkstate_t *s, int sock);
 int ll_get_data(linkstate_t *s, int sock)
 {
-	if (s->last!=-1) return; //If there is still unacknowledged data don't read anything new
+	if (s->last!=-1) return 0; //If there is still unacknowledged data don't read anything new
 	//Read from socket
 	int space=0;
 	int lb=s->border; 
@@ -518,7 +518,7 @@ static int v23_exec(struct ast_channel *chan, const char *data)
 		f->delivery.tv_usec = 0;
 		if (f->frametype == AST_FRAME_VOICE) {
 			int n;
-			int16_t *d=&(f->data.pad[f->offset*2]); 
+			int16_t *d=(f->data.ptr); 
 			//modulate outgoing audio
 			for (n=0; n<f->samples; n++) {
 				int e=v23_demodulate(d[n],&demod_state);
