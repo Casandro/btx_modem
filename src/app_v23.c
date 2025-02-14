@@ -298,7 +298,7 @@ uint16_t crc(uint16_t cr, uint8_t b)
 
 
 #define BLEN (256) //length of the circular buffer
-#define PLEN (64) //maximum length of a packet
+#define PLEN (32) //maximum length of a packet
 #define READLEN (32) 
 #define T1 (12000) 
 #define T1C (4)
