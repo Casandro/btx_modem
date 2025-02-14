@@ -393,7 +393,10 @@ int link_layer(linkstate_t *s, int sock, int input, int time)
 	if (s->neg_state>0) {
 		s->neg_state=s->neg_state+1;
 		if (s->neg_state==6000) return 0; //NUL Byte to cause modem to identify
-		if (s->neg_state>40000) s->neg_state=0; //Give connection
+		if (s->neg_state>40000) {
+			s->neg_state=0; //Give connection
+			return -1; //Ignore incoming data during negotiation
+		}
 	}
 	//if (input>=0) printf("input=0x%02x\n", input);
 	if ((s->ack_state==1) && ( (input==0x30) || (input==0x31) || (input==0x3f))) {
